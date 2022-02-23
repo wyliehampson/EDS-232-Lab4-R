@@ -1,0 +1,123 @@
+---
+title: "Lab 4a"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load libraries
+librarian::shelf(
+  devtools,
+  keras,
+  reticulate,
+  tensorflow)
+
+# show library versions and paths
+session_info() 
+
+# install Python into user space
+(reticulate::miniconda_path()) # show the Python path
+if (!file.exists(reticulate::miniconda_path()))
+  reticulate::install_miniconda()
+
+# install keras with tensorflow
+if (!keras::is_keras_available())
+  keras::install_keras()
+```
+
+```{r}
+library(keras)
+mnist <- dataset_mnist()
+```
+
+```{r}
+train_images <- mnist$train$x
+train_labels <- mnist$train$y
+test_images  <- mnist$test$x
+test_labels  <- mnist$test$y
+```
+
+```{r}
+str(train_images)
+```
+
+```{r}
+str(train_labels)
+```
+
+```{r}
+str(test_images)
+```
+
+```{r}
+str(test_labels)
+```
+
+```{r}
+librarian::shelf(glue)
+
+dim(train_images)
+```
+
+```{r}
+dim(train_labels)
+```
+
+```{r}
+par(mfrow=c(2,2))
+sapply(
+  1:4, function(i){ # i = 5
+    plot(
+      as.raster(train_images[i,,]/255),
+      main = glue("image_{i}: label = {train_labels[i]}")) })
+```
+
+```{r}
+network <- keras_model_sequential() %>% 
+  layer_dense(units = 512, activation = "relu", input_shape = c(28 * 28)) %>% 
+  layer_dense(units = 10, activation = "softmax")
+```
+
+```{r}
+network %>% compile(
+  optimizer = "rmsprop",
+  loss      = "categorical_crossentropy",
+  metrics   = c("accuracy"))
+```
+
+```{r}
+train_images <- array_reshape(train_images, c(60000, 28 * 28))
+train_images <- train_images / 255
+test_images  <- array_reshape(test_images, c(10000, 28 * 28))
+test_images  <- test_images / 255
+```
+
+```{r}
+train_labels <- to_categorical(train_labels)
+test_labels  <- to_categorical(test_labels)
+```
+
+```{r}
+network %>% fit(train_images, train_labels, epochs = 5, batch_size = 128)
+```
+
+```{r}
+metrics <- network %>% evaluate(test_images, test_labels, verbose = 0)
+metrics
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
