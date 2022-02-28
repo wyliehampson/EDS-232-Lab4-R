@@ -12,15 +12,14 @@ librarian::shelf(
   digest, dplyr, DT, glue, purrr, readr, stringr, tidyr)
 
 # path to folder containing species directories of images
-dir_train_mini <- "/courses/EDS232/inaturalist-2021/train_mini"
+dir_src  <- "/courses/EDS232/inaturalist-2021/train_mini"
+dir_dest <- "~/inat"
+dir.create(dir_dest, showWarnings = F)
 
 # get list of directories, one per species (n = 10,000 species)
-dirs_spp <- list.dirs(dir_train_mini, recursive = F)
+dirs_spp <- list.dirs(dir_src, recursive = F, full.names = T)
 n_spp <- length(dirs_spp)
-n_spp
-```
 
-```{r}
 # set seed (for reproducible results) 
 # just before sampling (otherwise get different results)
 # based on your username (unique amongst class)
@@ -45,46 +44,297 @@ basename(dirs_spp)[i2]
 ```
 
 ```{r}
-# path to output table of paths, which could be read by R, eg readr::read_csv(), or Python, eg pandas.read_csv()
-inat_spp_images_csv <- "~/inat_spp_images.csv"
-
+# setup data frame with source (src) and destination (dest) paths to images
 d <- tibble(
-  # get 10 species names
-  species = basename(dirs_spp)[i10],
-  # assign TRUE/FALSE for: 10 species (multi-class) and 2 species (binary)
-  spp10 = TRUE,
-  spp2  = c(T,T,rep(F,8)))
-DT::datatable(d)
-```
-
-```{r}
-d <- d %>% 
+  set     = c(rep("spp2", 2), rep("spp10", 10)),
+  dir_sp  = c(dirs_spp[i2], dirs_spp[i10]),
+  tbl_img = map(dir_sp, function(dir_sp){
+    tibble(
+      src_img = list.files(dir_sp, full.names = T),
+      subset  = c(rep("train", 30), rep("validation", 10), rep("test", 10))) })) %>% 
+  unnest(tbl_img) %>% 
   mutate(
-    # construct full path to species directory
-    dir_species = file.path(dir_train_mini, species),
-    tbl_images  = purrr::map(dir_species, function(dir){
-      # create a tibble per species
-      tibble(
-        # list files in the species directory (n=50)
-        image = list.files(dir),
-        # assign subset per species
-        subset = c(rep("train", 30), rep("validation", 10), rep("test", 10))) })) %>% 
-  # go from a tibble with 10 species rows containing a nested tbl_images to unnested, ie 10 species * 50 images = 500 rows
-  tidyr::unnest(tbl_images)
+    sp       = basename(dir_sp),
+    img      = basename(src_img),
+    dest_img = glue("{dir_dest}/{set}/{subset}/{sp}/{img}"))
 
-# write tibble to CSV file for subsequent reading
-readr::write_csv(d, inat_spp_images_csv)
-
-# show counts of image files per species and subset
+# show source and destination for first 10 rows of tibble
 d %>% 
-  mutate(
-    # truncate species to show one line per species
-    species_trunc = stringr::str_trunc(species, 40)) %>% 
-  select(species_trunc, subset) %>% 
-  table()
+  select(src_img, dest_img)
 ```
 
 ```{r}
+# iterate over rows, creating directory if needed and copying files 
+d %>% 
+  pwalk(function(src_img, dest_img, ...){
+    dir.create(dirname(dest_img), recursive = T, showWarnings = F)
+    file.copy(src_img, dest_img) })
 
+# uncomment to show the entire tree of your destination directory
+# system(glue("tree {dir_dest}"))
 ```
+
+### Task 1: 2 Species (Binary Classification) - nerual net
+
+```{r}
+library(keras)
+```
+
+Create directories to access images
+
+```{r}
+spp2_train_dir <- paste0(dir_dest,"/spp2/train")
+spp2_test_dir <- paste0(dir_dest,"/spp2/test")
+spp2_validation_dir <- paste0(dir_dest, "/spp2/validation")
+```
+
+```{r}
+# Re-scale all images by 1/255
+train_datagen <- image_data_generator(rescale = 1/255)
+validation_datagen <- image_data_generator(rescale = 1/255)
+test_datagen <- image_data_generator(rescale = 1/255)
+```
+
+```{r}
+spp2_train_generator <- flow_images_from_directory(
+  spp2_train_dir,
+  train_datagen,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+
+spp2_validation_generator <- flow_images_from_directory(
+  spp2_validation_dir,
+  validation_datagen,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+
+spp2_test_generator <- flow_images_from_directory(
+  spp2_test_dir,
+  test_datagen,
+  target_size = c(150, 150),
+  batch_size = 20,
+  class_mode = "binary"
+)
+```
+
+```{r}
+spp2_model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(150, 150, 3)) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_flatten() %>% 
+  layer_dense(units =  1, activation = "sigmoid")
+```
+
+```{r}
+spp2_model %>% compile(
+  optimizer = optimizer_rmsprop(learning_rate = 0.001),
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+```{r}
+summary(spp2_model)
+```
+
+```{r}
+spp2_history <- spp2_model %>% fit(
+    spp2_train_generator,
+    steps_per_epoch = 1,
+    epochs = 20,
+    validation_data = spp2_validation_generator,
+    validation_steps = 1
+  )
+```
+
+```{r}
+plot(spp2_history)
+```
+
+```{r}
+spp2_model %>% predict(spp2_test_generator)
+
+spp2_model %>% evaluate(spp2_test_generator)
+```
+
+### Task 2: 2 Species (binary classification) - convolutional neural net
+
+```{r}
+convnet_model <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = "relu",
+                input_shape = c(150, 150, 3)) %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 512, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r}
+summary(convnet_model)
+```
+
+```{r}
+convnet_model %>% compile(
+  loss = "binary_crossentropy",
+  optimizer = optimizer_rmsprop(learning_rate = 0.0001),
+  metrics = c("acc"))
+```
+
+```{r}
+convnet_model_history <- convnet_model %>% fit(
+    spp2_train_generator,
+    steps_per_epoch = 1,
+    epochs = 30,
+    validation_data = spp2_validation_generator,
+    validation_steps = 1
+)
+
+str(convnet_model_history)
+```
+
+```{r}
+plot(convnet_model_history)
+
+convnet_model %>% predict(spp2_test_generator)
+
+convnet_model %>% evaluate(spp2_test_generator)
+```
+
+#### Comparing the two species binary models:
+
+**For the 2 species binary models, the convnets model seems to give a higher accuracy with a smaller amount of loss than the regular binary classification model, so I would go with that model in this situation.**
+
+### Task 3: 10 Species (multi-class classification) - neural net
+
+Create new directories for 10 species
+
+```{r}
+spp10_train_dir <- paste0(dir_dest,"/spp10/train")
+spp10_test_dir <- paste0(dir_dest,"/spp10/test")
+spp10_validation_dir <- paste0(dir_dest, "/spp10/validation")
+```
+
+```{r}
+spp10_train_generator <- flow_images_from_directory(
+  spp10_train_dir,
+  train_datagen,
+  target_size = c(150, 150),
+  batch_size = 30,
+  class_mode = "categorical"
+)
+
+spp10_validation_generator <- flow_images_from_directory(
+  spp10_validation_dir,
+  validation_datagen,
+  target_size = c(150, 150),
+  batch_size = 10,
+  class_mode = "categorical"
+)
+
+spp10_test_generator <- flow_images_from_directory(
+  spp10_test_dir,
+  test_datagen,
+  target_size = c(150, 150),
+  batch_size = 10,
+  class_mode = "categorical"
+)
+```
+
+```{r}
+multi_class_model <- keras_model_sequential() %>% 
+  layer_dense(units = 64, activation = "relu", input_shape = c(150, 150, 3)) %>% 
+  layer_dense(units = 64, activation = "relu") %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 10, activation = "softmax")
+```
+
+```{r}
+multi_class_model %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("acc")
+)
+```
+
+```{r}
+spp10_history <- multi_class_model %>% fit(
+  spp10_train_generator,
+  steps_per_epoch = 5,
+  epochs = 20,
+  validation_data = spp10_validation_generator,
+  validation_steps = 10
+  )
+```
+
+```{r}
+plot(spp10_history)
+```
+
+```{r}
+multi_class_model %>% predict(spp10_test_generator)
+
+multi_class_model %>% evaluate(spp10_test_generator)
+```
+
+### Task 4: 10 Species (multi-class classification) - convolutional neural net
+
+```{r}
+multi_class_convnet_model <- keras_model_sequential() %>% 
+  layer_conv_2d(
+    filters = 32, kernel_size = c(3, 3), activation = "relu",
+    input_shape = c(150, 150, 3)) %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_flatten() %>% 
+  layer_dropout(rate = 0.5) %>% 
+  layer_dense(units = 512, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid") 
+```
+
+```{r}
+multi_class_convnet_model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(learning_rate = 1e-4),
+  metrics = c("acc"))
+```
+
+```{r}
+spp10_history_convnet <- multi_class_convnet_model %>% fit(
+    spp10_train_generator,
+    steps_per_epoch = 10,
+    epochs = 20,
+    validation_data = spp10_validation_generator,
+    validation_steps = 10
+)
+```
+
+```{r}
+plot(spp10_history_convnet)
+```
+
+```{r}
+multi_class_convnet_model %>% predict(spp10_test_generator)
+
+multi_class_convnet_model %>% evaluate(spp10_test_generator)
+```
+
+#### Comparing the ten species multi-class models:
+
+**For the 10 species multi-class models, the convnets model seems to give a higher accuracy with a smaller amount of loss than the regular multi-class classification model, so I would go with that model in this situation. However, here both models seem to be pretty low accuracy which leads me to believe that you would either want to build a model with more data, or do a better job of tuning the parameters than I did.**
+
 
